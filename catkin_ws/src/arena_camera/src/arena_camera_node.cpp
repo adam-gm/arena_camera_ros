@@ -404,22 +404,55 @@ bool ArenaCameraNode::startGrabbing()
     // PACKETS
     //
     // configure Auto Negotiate Packet Size and Packet Resend
-    Arena::SetNodeValue<bool>(pDevice->GetTLStreamNodeMap(), "StreamAutoNegotiatePacketSize", true);
-    Arena::SetNodeValue<bool>(pDevice->GetTLStreamNodeMap(), "StreamPacketResendEnable", true);
+    Arena::SetNodeValue<bool>(pDevice_->GetTLStreamNodeMap(), "StreamAutoNegotiatePacketSize", true);
+    Arena::SetNodeValue<bool>(pDevice_->GetTLStreamNodeMap(), "StreamPacketResendEnable", true);
 
     //
     // TRIGGER MODE
     //
-    GenApi::CStringPtr pTriggerMode = pNodeMap->GetNode("TriggerMode");
-    if (GenApi::IsWritable(pTriggerMode))
-    {
-      Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerMode", "On");
-      Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerSource", "Software");
-    }
+    //GenApi::CStringPtr pTriggerMode = pNodeMap->GetNode("TriggerMode");
+    ROS_INFO_STREAM(
+    "TEST: Current TriggerMode: " 
+    << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerMode"));
+
+    //GenApi::CCommandPtr pTriggerSoftware = pNodeMap->GetNode("TriggerSoftware");
+    //ROS_INFO_STREAM(
+    //"TriggerSoftware writable: "
+    //<< GenApi::IsWritable(pTriggerSoftware));
+
+
+
+    Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerSelector", "FrameStart");
+    Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerMode", "On");
+    Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerSource", "Line3");
+    Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerActivation", "RisingEdge");
+    
+    // 1. Select Line 2
+    Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "LineSelector", "Line2");
+    // 2. Set Line Mode to Output
+    Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "LineMode", "Output");
+    // 3. Set Line Source to ExposureActive
+    Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "LineSource", "ExposureActive");
+
+
+    ROS_INFO_STREAM("TEST, new TriggerMode: " << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerMode"));
+    ROS_INFO_STREAM("TEST, new TriggerSource: " << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerSource"));
+    // Select Line2 before reading its properties
+    Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "LineSelector", "Line2");
+
+    ROS_INFO_STREAM("LineSelector: "
+    << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "LineSelector"));
+
+    ROS_INFO_STREAM("LineMode: "
+    << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "LineMode"));
+
+    ROS_INFO_STREAM("LineSource: "
+    << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "LineSource"));
 
     //
     // FRAMERATE
     //
+    
     auto cmdlnParamFrameRate = arena_camera_parameter_set_.frameRate();
     auto currentFrameRate = Arena::GetNodeValue<double>(pNodeMap , "AcquisitionFrameRate");
     auto maximumFrameRate = GenApi::CFloatPtr(pNodeMap->GetNode("AcquisitionFrameRate"))->GetMax();
@@ -448,10 +481,22 @@ bool ArenaCameraNode::startGrabbing()
     }
     // requested framerate is valid so we set it to the device
     else{
-      Arena::SetNodeValue<bool>(pNodeMap, "AcquisitionFrameRateEnable", true);
-      Arena::SetNodeValue<double>(pNodeMap, "AcquisitionFrameRate" , 
+      auto trigger_source = Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerSource");
+      if (trigger_source == "Software"){
+        Arena::SetNodeValue<bool>(pNodeMap, "AcquisitionFrameRateEnable", true);
+        Arena::SetNodeValue<double>(pNodeMap, "AcquisitionFrameRate" , 
                                       cmdlnParamFrameRate);
-      ROS_INFO("Framerate is set to: %.2f Hz", cmdlnParamFrameRate);
+        ROS_INFO("Framerate is set to: %.2f Hz", cmdlnParamFrameRate);
+      }
+      else{
+        if (GenApi::IsWritable(pNodeMap->GetNode("AcquisitionFrameRateEnable")))
+        {
+          Arena::SetNodeValue<bool>(pNodeMap, "AcquisitionFrameRateEnable", false);
+          ROS_INFO_STREAM("AcquisitionFrameRateEnable set to " << Arena::GetNodeValue<bool>(pNodeMap, "AcquisitionFrameRateEnable"));
+        }
+        // External trigger decides the framerate
+        ROS_INFO_STREAM("Framerate is set by external trigger rate from source: " << trigger_source);
+      }
     }
 
     //
@@ -604,14 +649,15 @@ bool ArenaCameraNode::startGrabbing()
     pDevice_->StartStream();
     bool isTriggerArmed = false;
 
-    if (GenApi::IsWritable(pTriggerMode))
-    {
-      do
-      {
-        isTriggerArmed = Arena::GetNodeValue<bool>(pNodeMap, "TriggerArmed");
-      } while (isTriggerArmed == false);
-      Arena::ExecuteNode(pNodeMap, "TriggerSoftware");
-    }
+    //if (GenApi::IsWritable(pTriggerSoftware))
+    //{
+    //  do
+    //  {
+    //    isTriggerArmed = Arena::GetNodeValue<bool>(pNodeMap, "TriggerArmed");
+    //    ROS_INFO_STREAM("isTriggerArmed value: " << isTriggerArmed);
+    //  } while (isTriggerArmed == false);
+    //  Arena::ExecuteNode(pNodeMap, "TriggerSoftware");
+    //}
 
     pImage_ = pDevice_->GetImage(5000);
     pData_ = pImage_->GetData();
@@ -780,17 +826,18 @@ bool ArenaCameraNode::grabImage()
   boost::lock_guard<boost::recursive_mutex> lock(grab_mutex_);
   try
   {
-    GenApi::CStringPtr pTriggerMode = pDevice_->GetNodeMap()->GetNode("TriggerMode");
-    if (GenApi::IsWritable(pTriggerMode))
-    {
-      bool isTriggerArmed = false;
+    //GenApi::CStringPtr pTriggerMode = pDevice_->GetNodeMap()->GetNode("TriggerMode");
+    //GenApi::CCommandPtr pTriggerSoftware = pDevice_->GetNodeMap()->GetNode("TriggerSoftware");
+    //if (GenApi::IsWritable(pTriggerSoftware))
+    //{
+    //  bool isTriggerArmed = false;
 
-      do
-      {
-        isTriggerArmed = Arena::GetNodeValue<bool>(pDevice_->GetNodeMap(), "TriggerArmed");
-      } while (isTriggerArmed == false);
-      Arena::ExecuteNode(pDevice_->GetNodeMap(), "TriggerSoftware");
-    }
+    //  do
+    //  {
+    //    isTriggerArmed = Arena::GetNodeValue<bool>(pDevice_->GetNodeMap(), "TriggerArmed");
+    //  } while (isTriggerArmed == false);
+    //  Arena::ExecuteNode(pDevice_->GetNodeMap(), "TriggerSoftware");
+    //}
     pImage_ = pDevice_->GetImage(5000);
     pData_ = pImage_->GetData();
 

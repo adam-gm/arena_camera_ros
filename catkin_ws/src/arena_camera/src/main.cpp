@@ -48,7 +48,7 @@ int main(int argc, char **argv)
 
   arena_camera::ArenaCameraNode arena_camera_node;
 
-  ros::Rate r(arena_camera_node.frameRate());
+  //ros::Rate r(arena_camera_node.frameRate());
 
   ROS_INFO_STREAM("Start image grabbing if node connects to topic with "
                   << "a frame_rate of: " << arena_camera_node.frameRate() << " Hz");
@@ -59,7 +59,7 @@ int main(int argc, char **argv)
   while (ros::ok())
   {
     arena_camera_node.spin();
-    r.sleep();
+    //r.sleep();
   }
 
   ROS_INFO("Terminate ArenaCameraNode");
