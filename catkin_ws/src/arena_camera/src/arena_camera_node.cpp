@@ -47,6 +47,9 @@
 #include <arena_camera/arena_camera_node.h>
 #include <arena_camera/encoding_conversions.h>
 
+#include <deque>
+#include <std_msgs/Header.h>
+
 using diagnostic_msgs::DiagnosticStatus;
 
 namespace arena_camera
@@ -87,6 +90,8 @@ ArenaCameraNode::ArenaCameraNode()
   , sampling_indices_()
   , brightness_exp_lut_()
   , is_sleeping_(false)
+  , img_raw_synced_pub_(it_->advertiseCamera("image_raw_synced", 1))
+  , exposure_offset_sec_(0.0025)
 {
   diagnostics_updater_.setHardwareID("none");
   diagnostics_updater_.add("camera_availability", this, &ArenaCameraNode::create_diagnostics);
@@ -117,6 +122,17 @@ void ArenaCameraNode::diagnostics_timer_callback_(const ros::TimerEvent&)
   diagnostics_updater_.update();
 }
 
+void ArenaCameraNode::sentiIcCallback(const std_msgs::Header::ConstPtr& msg)
+{
+  senti_ic_queue_.push_back({msg->stamp, msg->seq});
+
+  if (senti_ic_queue_.size() > 100)
+  {
+    ROS_WARN_THROTTLE(1.0, "Sentiboard IC queue too large, dropping oldest");
+    senti_ic_queue_.pop_front();
+  }
+}
+
 void ArenaCameraNode::init()
 {
   // reading all necessary parameter to open the desired camera from the
@@ -125,6 +141,14 @@ void ArenaCameraNode::init()
   // These parameters furthermore contain the intrinsic calibration matrices,
   // in case they are provided
   arena_camera_parameter_set_.readFromRosParameterServer(nh_);
+
+  nh_.param<std::string>("senti_ic_topic", senti_ic_topic_, "/senti/senti/lucid1/ic");
+  nh_.param<double>("exposure_offset_sec", exposure_offset_sec_, 0.0025);
+
+    senti_ic_sub_ = nh_.subscribe(
+    senti_ic_topic_, 100, &ArenaCameraNode::sentiIcCallback, this);
+
+    ROS_INFO_STREAM("Sentiboard synced image enabled. IC topic: " << senti_ic_topic_);
 
   // setting the camera info URL to produce rectified image. Can substitute
   // any desired file path or comment out this line if only producing raw
@@ -761,13 +785,9 @@ uint32_t ArenaCameraNode::getNumSubscribersRaw() const
 void ArenaCameraNode::spin()
 {
   if (camera_info_manager_->isCalibrated())
-  {
     ROS_INFO_ONCE("Camera is calibrated");
-  }
   else
-  {
     ROS_INFO_ONCE("Camera not calibrated");
-  }
 
   if (pDevice_->IsConnected() == false)
   {
@@ -776,48 +796,73 @@ void ArenaCameraNode::spin()
     pDevice_ = nullptr;
     Arena::CloseSystem(pSystem_);
     pSystem_ = nullptr;
+
     for (ros::ServiceServer& user_output_srv : set_user_output_srvs_)
-    {
       user_output_srv.shutdown();
-    }
-    ros::Duration(0.5).sleep();  // sleep for half a second
+
+    ros::Duration(0.5).sleep();
     init();
     return;
   }
 
-  if (!isSleeping() && (img_raw_pub_.getNumSubscribers() || getNumSubscribersRect()))
+  if (isSleeping())
+    return;
+
+  if (!grabImage())
   {
-    if (getNumSubscribersRaw() || getNumSubscribersRect())
-    {
-      if (!grabImage())
-      {
-        ROS_INFO("did not get image");
-        return;
-      }
-    }
+    ROS_INFO("did not get image");
+    return;
+  }
 
-    if (img_raw_pub_.getNumSubscribers() > 0)
-    {
-      // get actual cam_info-object in every frame, because it might have
-      // changed due to a 'set_camera_info'-service call
-      sensor_msgs::CameraInfoPtr cam_info(new sensor_msgs::CameraInfo(camera_info_manager_->getCameraInfo()));
-      cam_info->header.stamp = img_raw_msg_.header.stamp;
+  bool has_senti_ic = false;
+  SentiHeader senti_ic;
 
-      // Publish via image_transport
-      img_raw_pub_.publish(img_raw_msg_, *cam_info);
-      ROS_INFO_ONCE("Number subscribers received");
-    }
+  if (!senti_ic_queue_.empty())
+  {
+    senti_ic = senti_ic_queue_.front();
+    senti_ic_queue_.pop_front();
+    has_senti_ic = true;
+  }
+  else
+  {
+    ROS_WARN_THROTTLE(1.0, "No Sentiboard IC timestamp available for image");
+  }
 
-    if (getNumSubscribersRect() > 0 && camera_info_manager_->isCalibrated())
-    {
-      cv_bridge_img_rect_->header.stamp = img_raw_msg_.header.stamp;
-      assert(pinhole_model_->initialized());
-      cv_bridge::CvImagePtr cv_img_raw = cv_bridge::toCvCopy(img_raw_msg_, img_raw_msg_.encoding);
-      pinhole_model_->fromCameraInfo(camera_info_manager_->getCameraInfo());
-      pinhole_model_->rectifyImage(cv_img_raw->image, cv_bridge_img_rect_->image);
-      img_rect_pub_->publish(*cv_bridge_img_rect_);
-      ROS_INFO_ONCE("Number subscribers rect received");
-    }
+  sensor_msgs::CameraInfoPtr cam_info(
+      new sensor_msgs::CameraInfo(camera_info_manager_->getCameraInfo()));
+
+  cam_info->header.stamp = img_raw_msg_.header.stamp;
+  cam_info->header.frame_id = img_raw_msg_.header.frame_id;
+
+  img_raw_pub_.publish(img_raw_msg_, *cam_info);
+
+  if (has_senti_ic)
+  {
+    sensor_msgs::Image synced_img = img_raw_msg_;
+    synced_img.header.stamp = senti_ic.stamp + ros::Duration(exposure_offset_sec_);
+    synced_img.header.seq = senti_ic.seq;
+
+    sensor_msgs::CameraInfo synced_cam_info(camera_info_manager_->getCameraInfo());
+    synced_cam_info.header.stamp = synced_img.header.stamp;
+    synced_cam_info.header.seq = synced_img.header.seq;
+    synced_cam_info.header.frame_id = synced_img.header.frame_id;
+
+    img_raw_synced_pub_.publish(synced_img, synced_cam_info);
+  }
+
+  if (getNumSubscribersRect() > 0 && camera_info_manager_->isCalibrated())
+  {
+    cv_bridge_img_rect_->header.stamp = img_raw_msg_.header.stamp;
+    assert(pinhole_model_->initialized());
+
+    cv_bridge::CvImagePtr cv_img_raw =
+        cv_bridge::toCvCopy(img_raw_msg_, img_raw_msg_.encoding);
+
+    pinhole_model_->fromCameraInfo(camera_info_manager_->getCameraInfo());
+    pinhole_model_->rectifyImage(cv_img_raw->image, cv_bridge_img_rect_->image);
+
+    img_rect_pub_->publish(*cv_bridge_img_rect_);
+    ROS_INFO_ONCE("Number subscribers rect received");
   }
 }
 
