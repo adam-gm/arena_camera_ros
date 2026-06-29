@@ -825,6 +825,11 @@ void ArenaCameraNode::spin()
   }
   else
   {
+    ++missed_ic;
+    ROS_WARN_STREAM_THROTTLE(
+    5.0,
+    "Missed IC events: " << missed_ic
+    << " / " << images_received);
     ROS_WARN_THROTTLE(1.0, "No Sentiboard IC timestamp available for image");
   }
 
@@ -846,9 +851,10 @@ void ArenaCameraNode::spin()
     synced_cam_info.header.stamp = synced_img.header.stamp;
     synced_cam_info.header.seq = synced_img.header.seq;
     synced_cam_info.header.frame_id = synced_img.header.frame_id;
-
+    ++synced_images;
     img_raw_synced_pub_.publish(synced_img, synced_cam_info);
   }
+
 
   if (getNumSubscribersRect() > 0 && camera_info_manager_->isCalibrated())
   {
@@ -890,7 +896,7 @@ bool ArenaCameraNode::grabImage()
     memcpy(&img_raw_msg_.data[0], pImage_->GetData(), img_raw_msg_.height * img_raw_msg_.step);
 
     img_raw_msg_.header.stamp = ros::Time::now();
-
+    ++images_received;
     pDevice_->RequeueBuffer(pImage_);
     return true;
   }
