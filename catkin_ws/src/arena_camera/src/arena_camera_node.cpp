@@ -91,7 +91,6 @@ ArenaCameraNode::ArenaCameraNode()
   , brightness_exp_lut_()
   , is_sleeping_(false)
   , img_raw_synced_pub_(it_->advertiseCamera("image_raw_synced", 1))
-  , exposure_offset_sec_(0.0025)
 {
   diagnostics_updater_.setHardwareID("none");
   diagnostics_updater_.add("camera_availability", this, &ArenaCameraNode::create_diagnostics);
@@ -143,7 +142,7 @@ void ArenaCameraNode::init()
   arena_camera_parameter_set_.readFromRosParameterServer(nh_);
 
   nh_.param<std::string>("senti_ic_topic", senti_ic_topic_, "/senti/senti/lucid1/ic");
-  nh_.param<double>("exposure_offset_sec", exposure_offset_sec_, 0.0025);
+  nh_.param<double>("exposure", exposure_time, 5000.0);
 
     senti_ic_sub_ = nh_.subscribe(
     senti_ic_topic_, 100, &ArenaCameraNode::sentiIcCallback, this);
@@ -450,7 +449,15 @@ bool ArenaCameraNode::startGrabbing()
     Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerMode", "On");
     Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerSource", "Line3");
     Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerActivation", "RisingEdge");
-    
+    ROS_INFO_STREAM(
+    "ExposureTime: "
+    << Arena::GetNodeValue<double>(pNodeMap, "ExposureTime")
+    << " us");
+
+    ROS_INFO_STREAM(
+    "ExposureAuto: "
+    << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "ExposureAuto"));
+
     // 1. Select Line 2
     Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "LineSelector", "Line2");
     // 2. Set Line Mode to Output
@@ -461,6 +468,7 @@ bool ArenaCameraNode::startGrabbing()
 
     ROS_INFO_STREAM("TEST, new TriggerMode: " << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerMode"));
     ROS_INFO_STREAM("TEST, new TriggerSource: " << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerSource"));
+    ROS_INFO_STREAM("TEST, new TriggerActivation: " << Arena::GetNodeValue<GenICam::gcstring>(pNodeMap, "TriggerActivation"));
     // Select Line2 before reading its properties
     Arena::SetNodeValue<GenICam::gcstring>(pNodeMap, "LineSelector", "Line2");
 
@@ -807,7 +815,7 @@ void ArenaCameraNode::spin()
 
   if (isSleeping())
     return;
-
+ 
   if (!grabImage())
   {
     ROS_INFO("did not get image");
@@ -835,11 +843,11 @@ void ArenaCameraNode::spin()
   cam_info->header.frame_id = img_raw_msg_.header.frame_id;
 
   img_raw_pub_.publish(img_raw_msg_, *cam_info);
-
+  
   if (has_senti_ic)
   {
     sensor_msgs::Image synced_img = img_raw_msg_;
-    synced_img.header.stamp = senti_ic.stamp + ros::Duration(exposure_offset_sec_);
+    synced_img.header.stamp = senti_ic.stamp + ros::Duration(exposure_time * 1e-6 / 2.0);
     synced_img.header.seq = senti_ic.seq;
 
     sensor_msgs::CameraInfo synced_cam_info(camera_info_manager_->getCameraInfo());
