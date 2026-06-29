@@ -405,7 +405,7 @@ namespace arena_camera
     uint64_t images_received = 0;
     uint64_t synced_images = 0;
     uint64_t missed_ic = 0;
-
+    std::mutex senti_stamp_mutex_;
     void sentiIcCallback(const std_msgs::Header::ConstPtr &msg);
 
     /// diagnostics:

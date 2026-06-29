@@ -123,6 +123,8 @@ void ArenaCameraNode::diagnostics_timer_callback_(const ros::TimerEvent&)
 
 void ArenaCameraNode::sentiIcCallback(const std_msgs::Header::ConstPtr& msg)
 {
+  std::lock_guard<std::mutex> lock(senti_stamp_mutex_);
+
   senti_ic_queue_.push_back({msg->stamp, msg->seq});
 
   if (senti_ic_queue_.size() > 100)
@@ -825,21 +827,27 @@ void ArenaCameraNode::spin()
   bool has_senti_ic = false;
   SentiHeader senti_ic;
 
+  {
+    std::lock_guard<std::mutex> lock(senti_stamp_mutex_);
+  
   if (!senti_ic_queue_.empty())
   {
     senti_ic = senti_ic_queue_.front();
     senti_ic_queue_.pop_front();
     has_senti_ic = true;
   }
-  else
-  {
+
+  }
+  if(!has_senti_ic){
     ++missed_ic;
     ROS_WARN_STREAM_THROTTLE(
     5.0,
     "Missed IC events: " << missed_ic
     << " / " << images_received);
     ROS_WARN_THROTTLE(1.0, "No Sentiboard IC timestamp available for image");
+
   }
+  
 
   sensor_msgs::CameraInfoPtr cam_info(
       new sensor_msgs::CameraInfo(camera_info_manager_->getCameraInfo()));
