@@ -400,7 +400,7 @@ namespace arena_camera
 
     bool publish_synced_image_;
     std::string senti_ic_topic_;
-    double exposure_offset_sec_;
+    double exposure_time;
 
     uint64_t images_received = 0;
     uint64_t synced_images = 0;
